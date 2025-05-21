@@ -30,6 +30,9 @@ load_dotenv()
 # Cache for geocoding results to avoid redundant API calls
 geocode_cache = {}
 
+# Counter for API calls
+api_call_counter = 0
+
 def haversine_distance(lat1, lon1, lat2, lon2):
     """
     Calculate the great circle distance between two points 
@@ -83,19 +86,75 @@ def find_city_in_dataset(city, country, dataset):
     
     return None
 
-def geocode_location_locationiq(city, country, api_key):
+def geocode_location_googlemaps(city, country, api_key):
     """
-    Geocode a city and country using LocationIQ API
+    Geocode a city and country using Google Maps API
     """
+    global api_call_counter
+    
     # Check for nan values
     if pd.isna(city) or pd.isna(country):
         logger.warning(f"Received nan value for city or country: city={city}, country={country}")
         return (None, None)
     
     # Check cache first
-    cache_key = f"{city.lower()},{country.lower()}"
+    cache_key = f"google:{city.lower()},{country.lower()}"
     if cache_key in geocode_cache:
         return geocode_cache[cache_key]
+    
+    # Increment API call counter
+    api_call_counter += 1
+    logger.info(f"Making Google Maps API call #{api_call_counter} for {city}, {country}")
+    
+    # Construct and encode the query
+    query = f"{city},{country}"
+    encoded_query = urllib.parse.quote(query)
+    
+    # Build the request URL
+    url = f"https://maps.googleapis.com/maps/api/geocode/json?address={encoded_query}&key={api_key}"
+    
+    try:
+        response = requests.get(url)
+        response.raise_for_status()  # Raise exception for HTTP errors
+        
+        data = response.json()
+        if data.get('status') == 'OK' and data.get('results'):
+            # Extract latitude and longitude from the first result
+            location = data['results'][0]['geometry']['location']
+            lat = float(location['lat'])
+            lng = float(location['lng'])
+            result = (lat, lng)
+            
+            # Cache the result
+            geocode_cache[cache_key] = result
+            return result
+        else:
+            logger.warning(f"No geocoding results found for {query} or API error: {data.get('status')}")
+            return (None, None)
+            
+    except Exception as e:
+        logger.error(f"Error geocoding {query}: {e}")
+        return (None, None)
+
+def geocode_location_locationiq(city, country, api_key):
+    """
+    Geocode a city and country using LocationIQ API
+    """
+    global api_call_counter
+    
+    # Check for nan values
+    if pd.isna(city) or pd.isna(country):
+        logger.warning(f"Received nan value for city or country: city={city}, country={country}")
+        return (None, None)
+    
+    # Check cache first
+    cache_key = f"locationiq:{city.lower()},{country.lower()}"
+    if cache_key in geocode_cache:
+        return geocode_cache[cache_key]
+    
+    # Increment API call counter
+    api_call_counter += 1
+    logger.info(f"Making LocationIQ API call #{api_call_counter} for {city}, {country}")
     
     # Construct and encode the query
     query = f"{city}, {country}"
@@ -126,6 +185,24 @@ def geocode_location_locationiq(city, country, api_key):
         logger.error(f"Error geocoding {query}: {e}")
         return (None, None)
 
+def geocode_location(city, country, api_key, geocode_api='googlemaps'):
+    """
+    Geocode a city and country using the specified API
+    
+    Args:
+        city: City name
+        country: Country name
+        api_key: API key for the geocoding service
+        geocode_api: Which geocoding API to use ('googlemaps' or 'locationiq')
+        
+    Returns:
+        tuple: (latitude, longitude) as floats, or (None, None) if not found
+    """
+    if geocode_api.lower() == 'locationiq':
+        return geocode_location_locationiq(city, country, api_key)
+    else:  # Default to Google Maps
+        return geocode_location_googlemaps(city, country, api_key)
+
 def find_nearest_large_city(lat, lon, dataset, min_population):
     """
     Find the nearest city with population >= min_population
@@ -152,7 +229,7 @@ def find_nearest_large_city(lat, lon, dataset, min_population):
     distances.sort(key=lambda x: x[1])
     return distances[0][0] if distances else None
 
-def process_input_file(input_file, output_file, simplemaps_dataset, min_population, api_key, starting_row=None, ending_row=None):
+def process_input_file(input_file, output_file, simplemaps_dataset, min_population, api_key, geocode_api='googlemaps', starting_row=None, ending_row=None):
     """
     Process the input CSV file and add nearest_large_city column
     
@@ -161,7 +238,8 @@ def process_input_file(input_file, output_file, simplemaps_dataset, min_populati
         output_file: Path to output CSV file
         simplemaps_dataset: DataFrame containing SimpleMaps dataset
         min_population: Minimum population threshold
-        api_key: LocationIQ API key
+        api_key: API key for the geocoding service
+        geocode_api: Which geocoding API to use ('googlemaps' or 'locationiq')
         starting_row: First row to process (0-based, inclusive)
         ending_row: Last row to process (0-based, inclusive)
     """
@@ -253,7 +331,7 @@ def process_input_file(input_file, output_file, simplemaps_dataset, min_populati
             city = row['City']
             country = row['Country']
             
-            logger.info(f"Processing {city}, {country}")
+            logger.info(f"Processing Row {index}: {city}, {country}")
             
             # Special case for "n/a" cities
             if isinstance(city, str) and city.lower() == "n/a":
@@ -270,9 +348,9 @@ def process_input_file(input_file, output_file, simplemaps_dataset, min_populati
                 lon = city_data['lng']
                 logger.info(f"Found {city}, {country} in SimpleMaps dataset: {lat}, {lon}")
             else:
-                # Fallback to LocationIQ API
-                logger.info(f"City not found in dataset, using LocationIQ API: {city}, {country}")
-                lat, lon = geocode_location_locationiq(city, country, api_key)
+                # Fallback to geocoding API
+                logger.info(f"City not found in dataset, using geocoding API: {city}, {country}")
+                lat, lon = geocode_location(city, country, api_key, geocode_api)
             
             # Find nearest large city
             if lat is not None and lon is not None:
@@ -296,6 +374,10 @@ def process_input_file(input_file, output_file, simplemaps_dataset, min_populati
         # Write output file with all processed rows
         df.to_csv(output_file, index=False)
         logger.info(f"Output written to {output_file}")
+        
+        # Report total API calls
+        global api_call_counter
+        logger.info(f"Total API calls made: {api_call_counter}")
     except Exception as e:
         logger.error(f"Error writing output file: {e}")
         logger.error(f"Last successfully processed row: {last_successful_row}. To resume, use --starting_row={last_successful_row + 1}")
@@ -311,8 +393,10 @@ def main():
                         help='Output CSV file with nearest_large_city column added')
     parser.add_argument('--minimum_population_size', type=int, default=1000000,
                         help='Minimum population for a city to be considered large')
-    parser.add_argument('--access_token', 
-                        help='LocationIQ API token (can also be set in .env file as ACCESS_TOKEN)')
+    parser.add_argument('--geocode_api_key', 
+                        help='API key for the geocoding service (can also be set in .env file as GEOCODE_API_KEY)')
+    parser.add_argument('--geocode_api', choices=['googlemaps', 'locationiq'], default='googlemaps',
+                        help='Which geocoding API to use (default: googlemaps)')
     parser.add_argument('--starting_row', type=int,
                         help='First row to process (0-based, inclusive)')
     parser.add_argument('--ending_row', type=int,
@@ -321,10 +405,13 @@ def main():
     args = parser.parse_args()
     
     # Get API key from command line or environment variable
-    api_key = args.access_token or os.getenv('ACCESS_TOKEN')
+    api_key = args.geocode_api_key or os.getenv('GEOCODE_API_KEY')
     if not api_key:
-        logger.error("LocationIQ API token not provided. Use --access_token or set ACCESS_TOKEN in .env file")
+        logger.error("Geocoding API key not provided. Use --geocode_api_key parameter or set GEOCODE_API_KEY in .env file")
         return
+    
+    # Log which API we're using
+    logger.info(f"Using {args.geocode_api} API for geocoding")
     
     # Load SimpleMaps dataset
     simplemaps_dataset = load_simplemaps_dataset('simplemaps/worldcities.csv')
@@ -339,6 +426,7 @@ def main():
             simplemaps_dataset,
             args.minimum_population_size,
             api_key,
+            args.geocode_api,
             args.starting_row,
             args.ending_row
         )
