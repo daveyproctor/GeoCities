@@ -1,0 +1,9 @@
+*.zip
+.venv/
+__pycache__/
+*.py[cod]
+.env
+city_country.csv
+city_country.xlsx
+city_country.nearest_cities.csv
+worldcities.xlsx
