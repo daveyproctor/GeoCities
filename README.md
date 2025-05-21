@@ -4,6 +4,8 @@
 
 This Python utility enriches a CSV file containing cities and countries by adding a new column that identifies the nearest large city with a population above a specified threshold. It's useful for data analysis, geographic mapping, and understanding proximity relationships between locations.
 
+![GeoCities Map](./images/map.jpeg)
+
 ## Features
 
 - Maps each input city to its nearest large city based on geographical distance
