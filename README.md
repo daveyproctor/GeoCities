@@ -14,6 +14,7 @@ This Python utility enriches a CSV file containing cities and countries by addin
 - Handles errors gracefully and supports resuming interrupted processing
 - Preserves existing results when processing specific row ranges
 - Supports both Google Maps and LocationIQ geocoding APIs
+- Optimizes search by using a filtered dataset of the largest N cities per country
 
 ## Requirements
 
@@ -72,6 +73,7 @@ Jersey City,United States
 - `--input_file`: Path to the input CSV file (default: `user_data/city_country.csv`)
 - `--output_file`: Path to the output CSV file (default: `user_data/city_country.nearest_cities.csv`)
 - `--minimum_population_size`: Minimum population threshold for large cities (default: 1,000,000)
+- `--max_cities_per_country`: Maximum number of largest cities to consider per country (default: 10)
 - `--geocode_api`: Which geocoding API to use ('googlemaps' or 'locationiq', default: 'googlemaps')
 - `--geocode_api_key`: Your API key for the selected geocoding service
 - `--starting_row`: First row to process (0-based, inclusive)
@@ -96,6 +98,14 @@ python find_nearest_city.py --geocode_api locationiq --geocode_api_key YOUR_LOCA
 ```bash
 python find_nearest_city.py --geocode_api_key YOUR_API_KEY --minimum_population_size 500000
 ```
+
+#### Limiting the Number of Cities per Country
+
+```bash
+python find_nearest_city.py --geocode_api_key YOUR_API_KEY --max_cities_per_country 5
+```
+
+This will create a filtered dataset containing only the 5 largest cities per country, which will be used when searching for the nearest large city.
 
 #### Using Custom Input and Output Files
 
@@ -157,3 +167,10 @@ Where `ROW_NUMBER` is the row number indicated in the error message.
 - The script caches API responses to reduce redundant API calls
 - It logs the number of API calls made during processing
 - At the end of processing, it reports the total number of API calls made
+- Creates a filtered dataset of the largest cities per country to optimize search
+
+## Generated Files
+
+When you run the script, it generates the following files:
+
+- `worldcities.largest_N_per_country.csv`: A filtered dataset containing the N largest cities per country (where N is the value of `--max_cities_per_country`). This file is used to optimize the search for nearest large cities by limiting the search to the most significant cities in each country.

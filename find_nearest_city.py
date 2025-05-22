@@ -61,6 +61,33 @@ def load_simplemaps_dataset(file_path):
         logger.error(f"Error loading SimpleMaps dataset: {e}")
         return pd.DataFrame()
 
+def create_largest_cities_per_country(dataset, max_cities_per_country):
+    """
+    Create a dataset of the largest N cities per country
+    
+    Args:
+        dataset: DataFrame containing SimpleMaps dataset
+        max_cities_per_country: Maximum number of cities to include per country
+        
+    Returns:
+        DataFrame containing the largest N cities per country
+    """
+    try:
+        # Group by country and get the largest cities by population
+        largest_cities = dataset.groupby('country').apply(
+            lambda x: x.nlargest(max_cities_per_country, 'population')
+        ).reset_index(drop=True)
+        
+        # Save to CSV
+        output_path = f'simplemaps/worldcities.largest_{max_cities_per_country}_per_country.csv'
+        largest_cities.to_csv(output_path, index=False)
+        logger.info(f"Created dataset of largest {max_cities_per_country} cities per country: {output_path}")
+        
+        return largest_cities
+    except Exception as e:
+        logger.error(f"Error creating largest cities dataset: {e}")
+        return pd.DataFrame()
+
 def find_city_in_dataset(city, country, dataset):
     """
     Find a city in the SimpleMaps dataset
@@ -203,15 +230,64 @@ def geocode_location(city, country, api_key, geocode_api='googlemaps'):
     else:  # Default to Google Maps
         return geocode_location_googlemaps(city, country, api_key)
 
-def find_nearest_large_city(lat, lon, dataset, min_population):
+def find_nearest_large_city(lat, lon, dataset, min_population, largest_cities_dataset=None, country=None):
     """
     Find the nearest city with population >= min_population
+    
+    Args:
+        lat: Latitude of the city
+        lon: Longitude of the city
+        dataset: Full SimpleMaps dataset
+        min_population: Minimum population threshold
+        largest_cities_dataset: Dataset of largest N cities per country (optional)
+        country: Country name (optional) - if provided, will limit search to this country
+        
+    Returns:
+        str: Name of the nearest large city, or None if not found
     """
     if lat is None or lon is None:
         return None
     
-    # Filter dataset for cities with population >= min_population
-    large_cities = dataset[dataset['population'] >= min_population]
+    # If country is not provided, try to determine it from the dataset
+    if country is None:
+        # Get the country from the full dataset based on closest match
+        closest_city_in_dataset = None
+        min_distance = float('inf')
+        
+        for _, city in dataset.iterrows():
+            city_lat = city['lat']
+            city_lon = city['lng']
+            distance = haversine_distance(lat, lon, city_lat, city_lon)
+            if distance < min_distance:
+                min_distance = distance
+                closest_city_in_dataset = city
+        
+        if closest_city_in_dataset is None:
+            logger.warning("Could not determine country for coordinates")
+            return None
+        
+        country = closest_city_in_dataset['country']
+    
+    # If we have a largest cities dataset, use it filtered by the country
+    if largest_cities_dataset is not None and not largest_cities_dataset.empty:
+        # Filter for cities in the same country that meet the population threshold
+        filtered_cities = largest_cities_dataset[
+            (largest_cities_dataset['country'] == country) & 
+            (largest_cities_dataset['population'] >= min_population)
+        ]
+        
+        if filtered_cities.empty:
+            logger.warning(f"No large cities found in {country} with population >= {min_population} in the largest cities dataset")
+            # Fall back to the full dataset
+            large_cities = dataset[
+                (dataset['country'] == country) & 
+                (dataset['population'] >= min_population)
+            ]
+        else:
+            large_cities = filtered_cities
+    else:
+        # Use the full dataset filtered by population
+        large_cities = dataset[dataset['population'] >= min_population]
     
     if large_cities.empty:
         logger.warning(f"No cities found with population >= {min_population}")
@@ -229,7 +305,7 @@ def find_nearest_large_city(lat, lon, dataset, min_population):
     distances.sort(key=lambda x: x[1])
     return distances[0][0] if distances else None
 
-def process_input_file(input_file, output_file, simplemaps_dataset, min_population, api_key, geocode_api='googlemaps', starting_row=None, ending_row=None):
+def process_input_file(input_file, output_file, simplemaps_dataset, min_population, api_key, geocode_api='googlemaps', starting_row=None, ending_row=None, largest_cities_dataset=None):
     """
     Process the input CSV file and add nearest_large_city column
     
@@ -242,6 +318,7 @@ def process_input_file(input_file, output_file, simplemaps_dataset, min_populati
         geocode_api: Which geocoding API to use ('googlemaps' or 'locationiq')
         starting_row: First row to process (0-based, inclusive)
         ending_row: Last row to process (0-based, inclusive)
+        largest_cities_dataset: Dataset of largest N cities per country (optional)
     """
     # Read input file
     input_df = pd.read_csv(input_file)
@@ -354,7 +431,7 @@ def process_input_file(input_file, output_file, simplemaps_dataset, min_populati
             
             # Find nearest large city
             if lat is not None and lon is not None:
-                nearest_city = find_nearest_large_city(lat, lon, simplemaps_dataset, min_population)
+                nearest_city = find_nearest_large_city(lat, lon, simplemaps_dataset, min_population, largest_cities_dataset, country)
                 df.at[index, 'Nearest Large City'] = nearest_city if nearest_city else ''
                 logger.info(f"Nearest large city to {city}, {country}: {nearest_city}")
             else:
@@ -393,6 +470,8 @@ def main():
                         help='Output CSV file with nearest_large_city column added')
     parser.add_argument('--minimum_population_size', type=int, default=1000000,
                         help='Minimum population for a city to be considered large')
+    parser.add_argument('--max_cities_per_country', type=int, default=10,
+                        help='Maximum number of largest cities to consider per country')
     parser.add_argument('--geocode_api_key', 
                         help='API key for the geocoding service (can also be set in .env file as GEOCODE_API_KEY)')
     parser.add_argument('--geocode_api', choices=['googlemaps', 'locationiq'], default='googlemaps',
@@ -418,6 +497,13 @@ def main():
     if simplemaps_dataset.empty:
         return
     
+    # Create largest cities per country dataset
+    largest_cities_dataset = create_largest_cities_per_country(simplemaps_dataset, args.max_cities_per_country)
+    if largest_cities_dataset.empty:
+        logger.warning("Could not create largest cities dataset, will use full dataset instead")
+    else:
+        logger.info(f"Using largest {args.max_cities_per_country} cities per country for nearest city search")
+    
     try:
         # Process input file
         process_input_file(
@@ -428,7 +514,8 @@ def main():
             api_key,
             args.geocode_api,
             args.starting_row,
-            args.ending_row
+            args.ending_row,
+            largest_cities_dataset
         )
     except Exception as e:
         logger.error(f"An error occurred during processing: {e}")
